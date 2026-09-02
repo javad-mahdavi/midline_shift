@@ -26,3 +26,4 @@ outputs/
 .DS_Store
 Thumbs.db
 
+.idea/

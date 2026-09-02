@@ -6,20 +6,26 @@ from dataset import MidlineShiftDataset, INPUT_SIZE
 from model import MidlineHeatmapModel, build_loss
 import time
 from tqdm.auto import tqdm
+import os
+import torch.backends.cudnn as cudnn
 
-ANNOTATION_ROOT = "/content/drive/MyDrive/midline_shift_project/data/annotations/"
-DICOM_ROOT = "/content/drive/MyDrive/midline_shift_project/data/training/"
+cudnn.benchmark = True
+
+ANNOTATION_ROOT = "data/annotations/"
+DICOM_ROOT = "data/training/"
 
 TRAIN_PKL = "pkl/train_split.pkl"
 VAL_PKL = "pkl/val_split.pkl"
 
 
-BATCH_SIZE = 8
-NUM_EPOCHS = 50
-LEARNING_RATE = 1e-4
+BATCH_SIZE = 2
+NUM_EPOCHS = 10
+LEARNING_RATE = 1e-5
 EARLY_STOP_PATIENCE = 8
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+MODEL_SAVE_PATH = "model/best_model.pth"
 
 MLS_BUCKET_EDGES = [0, 1, 3, 5, 10, 20, 1000]
 
@@ -350,11 +356,12 @@ def run():
     )
 
     if DEVICE == "cuda":
+        print("GPU:", torch.cuda.get_device_name(0))
 
-        print(
-            f"GPU: "
-            f"{torch.cuda.get_device_name(0)}"
-        )
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+        print(f"VRAM: {vram:.2f} GB")
+
+    print("=" * 60)
 
     print(
         f"Batch size: {BATCH_SIZE}"
@@ -411,7 +418,7 @@ def run():
         batch_size=BATCH_SIZE,
         sampler=sampler,
         num_workers=2,
-        pin_memory=True
+        pin_memory=torch.cuda.is_available()
     )
 
     val_loader = DataLoader(
@@ -419,7 +426,7 @@ def run():
         batch_size=BATCH_SIZE,
         shuffle=False,
         num_workers=2,
-        pin_memory=True
+        pin_memory=torch.cuda.is_available()
     )
 
 
@@ -428,11 +435,23 @@ def run():
         encoder_weights="imagenet"
     ).to(DEVICE)
 
-
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE
     )
+
+    CHECKPOINT = "model/best_model.pth"
+    best_mae = float("inf")
+
+    if os.path.exists(CHECKPOINT):
+        print("Loading previous best model...")
+        checkpoint = torch.load(CHECKPOINT, map_location=DEVICE)
+
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        best_mae = checkpoint["best_mae"]
+
+        print(f"Model loaded successfully — best_mae قبلی = {best_mae:.2f}mm")
 
 
     loss_fn = build_loss()
@@ -444,8 +463,6 @@ def run():
         else None
     )
 
-
-    best_mae = float("inf")
 
     epochs_no_improve = 0
 
@@ -549,22 +566,17 @@ def run():
             f"{estimated_remaining / 60:.2f} min"
         )
 
-
         if val_mae_mm < best_mae:
-
             best_mae = val_mae_mm
-
             epochs_no_improve = 0
-
-            torch.save(
-                model.state_dict(),
-                "model/best_model.pth"
-            )
-
-            print()
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_mae": best_mae,
+            }, MODEL_SAVE_PATH)
 
             print(
-                "✓ Best model saved!"
+                f"Model saved: {MODEL_SAVE_PATH}"
             )
 
             print(

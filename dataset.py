@@ -92,6 +92,11 @@ class MidlineShiftDataset(Dataset):
         image_t = transformed["image"]
         keypoints_t = transformed["keypoints"]
 
+        keypoints_tensor = torch.tensor(
+            keypoints_t,
+            dtype=torch.float32
+        )
+
 
         heatmap_size = INPUT_SIZE // HEATMAP_DOWNSAMPLE
         heatmaps = np.zeros((3, heatmap_size, heatmap_size), dtype=np.float32)
@@ -108,6 +113,7 @@ class MidlineShiftDataset(Dataset):
             "pixel_spacing": torch.tensor(pixel_spacing, dtype=torch.float32),
             "orig_size": torch.tensor([orig_h, orig_w], dtype=torch.float32),
             "mls_gt_mm": torch.tensor(row["MidlineShiftMM"], dtype=torch.float32),
+            "keypoints": keypoints_tensor
         }
 
 
