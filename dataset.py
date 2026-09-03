@@ -7,9 +7,6 @@ import torch
 from torch.utils.data import Dataset
 
 
-ANNOTATION_ROOT = "data/annotations/"
-DICOM_ROOT = "data/training/"
-
 WINDOW_LEVEL = 40
 WINDOW_WIDTH = 80
 INPUT_SIZE = 256
@@ -115,35 +112,3 @@ class MidlineShiftDataset(Dataset):
             "mls_gt_mm": torch.tensor(row["MidlineShiftMM"], dtype=torch.float32),
             "keypoints": keypoints_tensor
         }
-
-
-def smoke_test_heatmap_generation():
-    json_path = "data/annotations/515/1.2.392.200036.9116.2.6.1.44063.1811171443.1622526536.658735.json"
-    with open(json_path) as f:
-        ann = json.load(f)
-    kp = ann["keypoints"]
-    keypoints_xy = [tuple(kp[name]) for name in KEYPOINT_NAMES]
-    print("مختصات خام (روی تصویر 512x512):", keypoints_xy)
-
-    fake_image = np.random.rand(512, 512).astype(np.float32)
-
-    transform = A.Compose(
-        [A.Resize(INPUT_SIZE, INPUT_SIZE)],
-        keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
-    )
-    out = transform(image=fake_image, keypoints=keypoints_xy)
-    print("مختصات بعد از resize به", INPUT_SIZE, ":", out["keypoints"])
-
-    heatmap_size = INPUT_SIZE // HEATMAP_DOWNSAMPLE
-    for name, (x, y) in zip(KEYPOINT_NAMES, out["keypoints"]):
-        hx, hy = x / HEATMAP_DOWNSAMPLE, y / HEATMAP_DOWNSAMPLE
-        hm = generate_gaussian_heatmap(heatmap_size, heatmap_size, hx, hy, HEATMAP_SIGMA)
-        peak_y, peak_x = np.unravel_index(np.argmax(hm), hm.shape)
-        print(f"{name}: مرکز مورد انتظار=({hx:.1f},{hy:.1f}) | argmax واقعی heatmap=({peak_x},{peak_y})")
-        assert abs(peak_x - hx) <= 1 and abs(peak_y - hy) <= 1, "heatmap peak جای درستی نیست!"
-
-    print("\n✅ منطق تولید heatmap تایید شد (مستقل از خود فایل DICOM)")
-
-
-if __name__ == "__main__":
-    smoke_test_heatmap_generation()

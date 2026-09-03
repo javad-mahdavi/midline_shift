@@ -1,31 +1,14 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, WeightedRandomSampler
-from dataset import MidlineShiftDataset, INPUT_SIZE
-from model import MidlineHeatmapModel, build_loss
-import time
+from torch.utils.data import WeightedRandomSampler
+from dataset import INPUT_SIZE
 from tqdm.auto import tqdm
-import os
 import torch.backends.cudnn as cudnn
 
 cudnn.benchmark = True
 
-ANNOTATION_ROOT = "data/annotations/"
-DICOM_ROOT = "data/training/"
-
-TRAIN_PKL = "pkl/train_split.pkl"
-VAL_PKL = "pkl/val_split.pkl"
-
-
-BATCH_SIZE = 2
-NUM_EPOCHS = 10
-LEARNING_RATE = 1e-5
-EARLY_STOP_PATIENCE = 8
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-MODEL_SAVE_PATH = "model/best_model.pth"
 
 MLS_BUCKET_EDGES = [0, 1, 3, 5, 10, 20, 1000]
 
@@ -159,7 +142,8 @@ def train_one_epoch(
     optimizer,
     loss_fn,
     device,
-    scaler=None
+    scaler=None,
+    desc="Train"
 ):
 
     model.train()
@@ -173,7 +157,7 @@ def train_one_epoch(
 
     progress_bar = tqdm(
         loader,
-        desc="Train",
+        desc=desc,
         leave=False,
         unit="batch"
     )
@@ -186,6 +170,11 @@ def train_one_epoch(
         )
 
         targets = batch["heatmaps"].to(
+            device,
+            non_blocking=True
+        )
+
+        mls_gt_mm = batch["mls_gt_mm"].to(
             device,
             non_blocking=True
         )
@@ -207,7 +196,8 @@ def train_one_epoch(
 
                 loss = loss_fn(
                     outputs,
-                    targets
+                    targets,
+                    mls_gt_mm
                 )
 
             scaler.scale(
@@ -228,7 +218,8 @@ def train_one_epoch(
 
             loss = loss_fn(
                 outputs,
-                targets
+                targets,
+                mls_gt_mm
             )
 
             loss.backward()
@@ -255,7 +246,8 @@ def validate_one_epoch(
     model,
     loader,
     loss_fn,
-    device
+    device,
+    desc="Validation"
 ):
 
     model.eval()
@@ -266,7 +258,7 @@ def validate_one_epoch(
 
     progress_bar = tqdm(
         loader,
-        desc="Validation",
+        desc=desc,
         leave=False,
         unit="batch"
     )
@@ -302,7 +294,8 @@ def validate_one_epoch(
 
         loss = loss_fn(
             outputs,
-            targets
+            targets,
+            gt_mls.to(device, non_blocking=True)
         )
 
         total_loss += (
@@ -345,297 +338,3 @@ def validate_one_epoch(
     )
 
     return avg_loss, mae_mm
-
-
-def run():
-
-    print("=" * 60)
-
-    print(
-        f"Device: {DEVICE}"
-    )
-
-    if DEVICE == "cuda":
-        print("GPU:", torch.cuda.get_device_name(0))
-
-        vram = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
-        print(f"VRAM: {vram:.2f} GB")
-
-    print("=" * 60)
-
-    print(
-        f"Batch size: {BATCH_SIZE}"
-    )
-
-    print(
-        f"Total epochs: {NUM_EPOCHS}"
-    )
-
-    print("=" * 60)
-
-
-    train_df = pd.read_pickle(
-        TRAIN_PKL
-    )
-
-    val_df = pd.read_pickle(
-        VAL_PKL
-    )
-
-    print(
-        f"Train samples: "
-        f"{len(train_df)}"
-    )
-
-    print(
-        f"Validation samples: "
-        f"{len(val_df)}"
-    )
-
-
-    train_dataset = MidlineShiftDataset(
-        train_df,
-        ANNOTATION_ROOT,
-        DICOM_ROOT,
-        train=True
-    )
-
-    val_dataset = MidlineShiftDataset(
-        val_df,
-        ANNOTATION_ROOT,
-        DICOM_ROOT,
-        train=False
-    )
-
-
-
-    sampler = build_weighted_sampler(
-        train_df
-    )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=BATCH_SIZE,
-        sampler=sampler,
-        num_workers=2,
-        pin_memory=torch.cuda.is_available()
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=torch.cuda.is_available()
-    )
-
-
-    model = MidlineHeatmapModel(
-        encoder_name="resnet34",
-        encoder_weights="imagenet"
-    ).to(DEVICE)
-
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=LEARNING_RATE
-    )
-
-    CHECKPOINT = "model/best_model.pth"
-    best_mae = float("inf")
-
-    if os.path.exists(CHECKPOINT):
-        print("Loading previous best model...")
-        checkpoint = torch.load(CHECKPOINT, map_location=DEVICE)
-
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        best_mae = checkpoint["best_mae"]
-
-        print(f"Model loaded successfully — best_mae قبلی = {best_mae:.2f}mm")
-
-
-    loss_fn = build_loss()
-
-
-    scaler = (
-        torch.amp.GradScaler("cuda")
-        if DEVICE == "cuda"
-        else None
-    )
-
-
-    epochs_no_improve = 0
-
-    total_training_start = time.time()
-
-
-    for epoch in range(
-        1,
-        NUM_EPOCHS + 1
-    ):
-
-        epoch_start = time.time()
-
-        print()
-        print("=" * 60)
-
-        print(
-            f"Epoch {epoch}/{NUM_EPOCHS}"
-        )
-
-        print("=" * 60)
-
-
-        train_loss = train_one_epoch(
-            model,
-            train_loader,
-            optimizer,
-            loss_fn,
-            DEVICE,
-            scaler=scaler
-        )
-
-
-        val_loss, val_mae_mm = (
-            validate_one_epoch(
-                model,
-                val_loader,
-                loss_fn,
-                DEVICE
-            )
-        )
-
-
-        epoch_time = (
-            time.time()
-            - epoch_start
-        )
-
-        total_elapsed = (
-            time.time()
-            - total_training_start
-        )
-
-        remaining_epochs = (
-            NUM_EPOCHS - epoch
-        )
-
-        avg_epoch_time = (
-            total_elapsed / epoch
-        )
-
-        estimated_remaining = (
-            remaining_epochs
-            * avg_epoch_time
-        )
-
-
-        print()
-
-        print(
-            f"Epoch {epoch:03d}/{NUM_EPOCHS}"
-        )
-
-        print(
-            f"Train Loss : "
-            f"{train_loss:.4f}"
-        )
-
-        print(
-            f"Val Loss   : "
-            f"{val_loss:.4f}"
-        )
-
-        print(
-            f"Val MAE    : "
-            f"{val_mae_mm:.2f} mm"
-        )
-
-        print(
-            f"Epoch Time : "
-            f"{epoch_time / 60:.2f} min"
-        )
-
-        print(
-            f"Elapsed    : "
-            f"{total_elapsed / 60:.2f} min"
-        )
-
-        print(
-            f"ETA        : "
-            f"{estimated_remaining / 60:.2f} min"
-        )
-
-        if val_mae_mm < best_mae:
-            best_mae = val_mae_mm
-            epochs_no_improve = 0
-            torch.save({
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "best_mae": best_mae,
-            }, MODEL_SAVE_PATH)
-
-            print(
-                f"Model saved: {MODEL_SAVE_PATH}"
-            )
-
-            print(
-                f"  Best MAE = "
-                f"{best_mae:.2f} mm"
-            )
-
-        else:
-
-            epochs_no_improve += 1
-
-            print(
-                f"No improvement: "
-                f"{epochs_no_improve}/"
-                f"{EARLY_STOP_PATIENCE}"
-            )
-
-
-            if (
-                epochs_no_improve
-                >= EARLY_STOP_PATIENCE
-            ):
-
-                print()
-
-                print(
-                    f"Early stopping at "
-                    f"epoch {epoch}"
-                )
-
-                break
-
-
-    total_training_time = (
-        time.time()
-        - total_training_start
-    )
-
-    print()
-    print("=" * 60)
-
-    print(
-        "TRAINING FINISHED"
-    )
-
-    print("=" * 60)
-
-    print(
-        f"Best Val MAE: "
-        f"{best_mae:.2f} mm"
-    )
-
-    print(
-        f"Total Time: "
-        f"{total_training_time / 60:.2f} min"
-    )
-
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    run()

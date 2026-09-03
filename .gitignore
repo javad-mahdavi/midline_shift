@@ -27,3 +27,5 @@ outputs/
 Thumbs.db
 
 .idea/
+
+.vscode
